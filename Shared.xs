@@ -9,7 +9,8 @@
     if (!sv_isobject(sv) || !sv_derived_from(sv, "Data::DisjointSet::Shared")) \
         croak("Expected a Data::DisjointSet::Shared object"); \
     DsuHandle *h = INT2PTR(DsuHandle*, SvIV(SvRV(sv))); \
-    if (!h) croak("Attempted to use a destroyed Data::DisjointSet::Shared object")
+    if (!h) croak("Attempted to use a destroyed Data::DisjointSet::Shared object"); \
+    sv_2mortal(SvREFCNT_inc(SvRV(sv)))
 
 #define MAKE_OBJ(class, handle) \
     SV *obj = newSViv(PTR2IV(handle)); \
@@ -29,9 +30,10 @@ new(class, path = &PL_sv_undef, n = 0, ...)
   PREINIT:
     char errbuf[DSU_ERR_BUFLEN];
   CODE:
-    const char *p = (SvGETMAGIC(path), SvOK(path)) ? SvPV_nolen(path) : NULL;
-    /* Optional 4th arg: file mode for exclusive create (default 0600, owner-only). */
+    /* Optional 4th arg: file mode for exclusive create (default 0600, owner-only).
+       Resolve BEFORE capturing the path PV: its get-magic could realloc/free it. */
     mode_t mode = (items > 3 && (SvGETMAGIC(ST(3)), SvOK(ST(3)))) ? (mode_t)SvUV(ST(3)) : 0600;
+    const char *p = (SvGETMAGIC(path), SvOK(path)) ? SvPV_nolen(path) : NULL;
     DsuHandle *h = dsu_create(p, (uint64_t)n, mode, errbuf);   /* validates args into errbuf */
     if (!h) croak("Data::DisjointSet::Shared->new: %s", errbuf);
     MAKE_OBJ(class, h);
@@ -83,9 +85,9 @@ find(self, x)
     EXTRACT(self);
   CODE:
     /* Range-check BEFORE locking so a croak holds no lock. */
-    if (x >= h->hdr->n)
+    if (x >= h->n)
         croak("Data::DisjointSet::Shared->find: index %" UVuf " out of range (n=%u)",
-              x, h->hdr->n);
+              x, h->n);
     /* find performs path compression -> it MUTATES -> take the write lock. */
     dsu_rwlock_wrlock(h);
     RETVAL = (UV)dsu_find(h, (uint32_t)x);
@@ -102,12 +104,12 @@ union(self, a, b)
   PREINIT:
     EXTRACT(self);
   CODE:
-    if (a >= h->hdr->n)
+    if (a >= h->n)
         croak("Data::DisjointSet::Shared->union: index %" UVuf " out of range (n=%u)",
-              a, h->hdr->n);
-    if (b >= h->hdr->n)
+              a, h->n);
+    if (b >= h->n)
         croak("Data::DisjointSet::Shared->union: index %" UVuf " out of range (n=%u)",
-              b, h->hdr->n);
+              b, h->n);
     dsu_rwlock_wrlock(h);
     RETVAL = (IV)dsu_union_locked(h, (uint32_t)a, (uint32_t)b);   /* 1 = newly merged, 0 = already together */
     __atomic_fetch_add(&h->hdr->stat_ops, 1, __ATOMIC_RELAXED);
@@ -123,12 +125,12 @@ connected(self, a, b)
   PREINIT:
     EXTRACT(self);
   CODE:
-    if (a >= h->hdr->n)
+    if (a >= h->n)
         croak("Data::DisjointSet::Shared->connected: index %" UVuf " out of range (n=%u)",
-              a, h->hdr->n);
-    if (b >= h->hdr->n)
+              a, h->n);
+    if (b >= h->n)
         croak("Data::DisjointSet::Shared->connected: index %" UVuf " out of range (n=%u)",
-              b, h->hdr->n);
+              b, h->n);
     /* connected compresses paths via dsu_find -> it MUTATES -> write lock. */
     dsu_rwlock_wrlock(h);
     RETVAL = dsu_connected_locked(h, (uint32_t)a, (uint32_t)b);
@@ -146,6 +148,7 @@ union_many(self, pairs)
     AV *av;
     IV  top;
   CODE:
+    SvGETMAGIC(pairs);
     if (!SvROK(pairs) || SvTYPE(SvRV(pairs)) != SVt_PVAV)
         croak("Data::DisjointSet::Shared->union_many: expected an array reference");
     av = (AV *)SvRV(pairs);
@@ -155,7 +158,7 @@ union_many(self, pairs)
         STRLEN npairs;
         uint32_t *vals = NULL;
         UV merged = 0;
-        uint32_t n = h->hdr->n;
+        uint32_t n = h->n;
         if (cnt & 1)
             croak("Data::DisjointSet::Shared->union_many: expected an even number of elements (flat [a0,b0,a1,b1,...]), got %" UVuf,
                   (UV)cnt);
@@ -188,9 +191,9 @@ set_size(self, x)
   PREINIT:
     EXTRACT(self);
   CODE:
-    if (x >= h->hdr->n)
+    if (x >= h->n)
         croak("Data::DisjointSet::Shared->set_size: index %" UVuf " out of range (n=%u)",
-              x, h->hdr->n);
+              x, h->n);
     /* set_size compresses paths via dsu_find -> it MUTATES -> write lock. */
     dsu_rwlock_wrlock(h);
     RETVAL = (UV)dsu_set_size_locked(h, (uint32_t)x);
