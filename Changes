@@ -1,6 +1,12 @@
 Revision history for Data-DisjointSet-Shared
 
-0.03      2026-07-21
+0.03      2026-07-22
+          - Fix a use-after-free in union_many(): a tied array, or overloaded
+            or tied elements, run Perl that can destroy the set, after which
+            the already-captured handle was still used. Such a call now
+            croaks.
+          - On-disk format change (v1 -> v2): an existing 0.02 file is
+            refused; recreate it.
           - Validate the element count from one snapshot at attach.
           - Resolve argument magic before capturing the path string.
 

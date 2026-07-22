@@ -12,6 +12,20 @@
     if (!h) croak("Attempted to use a destroyed Data::DisjointSet::Shared object"); \
     sv_2mortal(SvREFCNT_inc(SvRV(sv)))
 
+/* Re-read the handle after a call that can run Perl code: overloaded/tied
+ * argument magic, av_len on a TIED array (AvFILL -> mg_size -> FETCHSIZE),
+ * and element fetches.  EXTRACT's sv_2mortal(SvREFCNT_inc(...)) pin only
+ * blocks REFCOUNT-driven destruction; an explicit $obj->DESTROY frees the
+ * handle regardless and zeroes the IV, so the local `h` would dangle.
+ * That same Perl can also REPLACE the invocant ($obj = 42 mutates ST(0),
+ * because Perl passes aliases), which is why SvROK is re-checked before
+ * SvRV -- otherwise SvRV would run on a non-reference. */
+#define REEXTRACT(sv) \
+    if (!SvROK(sv)) \
+        croak("Data::DisjointSet::Shared object was replaced during the call"); \
+    h = INT2PTR(DsuHandle*, SvIV(SvRV(sv))); \
+    if (!h) croak("Data::DisjointSet::Shared object destroyed during the call")
+
 #define MAKE_OBJ(class, handle) \
     SV *obj = newSViv(PTR2IV(handle)); \
     SV *ref = newRV_noinc(obj); \
@@ -153,6 +167,9 @@ union_many(self, pairs)
         croak("Data::DisjointSet::Shared->union_many: expected an array reference");
     av = (AV *)SvRV(pairs);
     top = av_len(av);                     /* last index, -1 if empty */
+    /* SvGETMAGIC(pairs) above, and av_len on a tied array, both run Perl that
+     * can have destroyed self -- re-check before the first use of h below. */
+    REEXTRACT(self);
     {
         STRLEN cnt = (top >= 0) ? (STRLEN)(top + 1) : 0, i;
         STRLEN npairs;
@@ -174,6 +191,10 @@ union_many(self, pairs)
                 vals[i] = (uint32_t)v;
             }
         }
+        /* Element get-magic in the resolve loop above can also have destroyed
+         * self; re-check before taking the lock (and note `n` may be stale --
+         * a destroyed handle croaks here rather than being used). */
+        REEXTRACT(self);
         dsu_rwlock_wrlock(h);                            /* locked region: NO croak-capable calls */
         for (i = 0; i < npairs; i++)
             merged += (UV)dsu_union_locked(h, vals[2*i], vals[2*i + 1]);
