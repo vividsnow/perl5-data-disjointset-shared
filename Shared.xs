@@ -55,7 +55,7 @@ new(class, path = &PL_sv_undef, n = 0, ...)
     mode_t mode = (items > 3 && (SvGETMAGIC(ST(3)), SvOK(ST(3)))) ? (mode_t)SvUV(ST(3)) : 0600;
     const char *p = (SvGETMAGIC(path), SvOK(path)) ? SvPV_nolen(path) : NULL;
     DsuHandle *h = dsu_create(p, (uint64_t)n, mode, errbuf);   /* validates args into errbuf */
-    if (!h) croak("Data::DisjointSet::Shared->new: %s", errbuf);
+    if (!h) croak("Data::DisjointSet::Shared->new: %s", errbuf[0] ? errbuf : "out of memory");
     MAKE_OBJ(class, h);
   OUTPUT:
     RETVAL
@@ -70,7 +70,7 @@ new_memfd(class, name = &PL_sv_undef, n = 0)
   CODE:
     const char *nm = (SvGETMAGIC(name), SvOK(name)) ? SvPV_nolen(name) : NULL;   /* undef -> default label */
     DsuHandle *h = dsu_create_memfd(nm, (uint64_t)n, errbuf);   /* validates args into errbuf */
-    if (!h) croak("Data::DisjointSet::Shared->new_memfd: %s", errbuf);
+    if (!h) croak("Data::DisjointSet::Shared->new_memfd: %s", errbuf[0] ? errbuf : "out of memory");
     MAKE_OBJ(class, h);
   OUTPUT:
     RETVAL
@@ -83,7 +83,7 @@ new_from_fd(class, fd)
     char errbuf[DSU_ERR_BUFLEN];
   CODE:
     DsuHandle *h = dsu_open_fd(fd, errbuf);
-    if (!h) croak("Data::DisjointSet::Shared->new_from_fd: %s", errbuf);
+    if (!h) croak("Data::DisjointSet::Shared->new_from_fd: %s", errbuf[0] ? errbuf : "out of memory");
     MAKE_OBJ(class, h);
   OUTPUT:
     RETVAL

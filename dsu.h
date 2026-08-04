@@ -615,7 +615,6 @@ static inline void dsu_init_header(void *base, uint32_t n, uint64_t total_size) 
     /* Explicitly zero the header + reader-slot region (lock-recovery state);
        the parent/size arrays are initialized explicitly below. */
     memset(base, 0, (size_t)L.parent);
-    hdr->magic            = DSU_MAGIC;
     hdr->version          = DSU_VERSION;
     hdr->n                = n;
     hdr->num_sets         = n;
@@ -628,6 +627,11 @@ static inline void dsu_init_header(void *base, uint32_t n, uint64_t total_size) 
         uint32_t *sz = (uint32_t *)((char *)base + L.size);
         for (uint32_t i = 0; i < n; i++) { p[i] = i; sz[i] = 1; }
     }
+    /* Publish magic LAST, as a release store: it is the commit point, so a
+       creator killed before this store leaves magic==0 -- which the
+       crashed-creator recovery treats as an abandoned mid-init file and
+       recovers, instead of a magic-set-but-incomplete header that would brick. */
+    __atomic_store_n(&hdr->magic, DSU_MAGIC, __ATOMIC_RELEASE);
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
 }
 
@@ -706,6 +710,16 @@ static int dsu_secure_open(const char *path, mode_t mode, char *errbuf) {
     return -1;
 }
 
+/* True iff the whole mapped region is zero. A freshly ftruncate'd file (the only
+   thing an abandoned mid-init creator leaves) reads as all zeros, so this lets the
+   recovery re-init ONLY a provably-empty file and never a same-owner file that
+   merely starts with a zero word. Recovery is a cold path, so a byte scan is fine. */
+static inline int dsu_region_is_zero(const void *p, size_t n) {
+    const unsigned char *b = (const unsigned char *)p;
+    for (size_t i = 0; i < n; i++) if (b[i]) return 0;
+    return 1;
+}
+
 static DsuHandle *dsu_create(const char *path, uint64_t n_in, mode_t mode, char *errbuf) {
     if (!dsu_validate_create_args(n_in, errbuf)) return NULL;
     uint32_t n = (uint32_t)n_in;
@@ -747,10 +761,11 @@ static DsuHandle *dsu_create(const char *path, uint64_t n_in, mode_t mode, char 
                  * ftruncate and dsu_init_header below leaves a full-size, all-zero
                  * (magic==0) file that would otherwise brick every future open of
                  * this path.  Re-initialize it, but ONLY when it is exactly our
-                 * size, still uninitialized (magic==0), and owned by us -- a valid
-                 * or foreign file fails this and still errors, never clobbered. */
+                 * size, owned by us, and provably all-zero (a fresh ftruncate) --
+                 * a valid, foreign, wrong-size, or any non-empty file fails this
+                 * and still errors, never clobbered. */
                 if (((DsuHeader *)base)->magic == 0 && (uint64_t)st.st_size == total
-                    && st.st_uid == geteuid()) {
+                    && st.st_uid == geteuid() && dsu_region_is_zero(base, map_size)) {
                     if (fchmod(fd, mode) < 0) {
                         DSU_ERR("%s: fchmod: %s", path, strerror(errno));
                         munmap(base, map_size); flock(fd, LOCK_UN); close(fd); return NULL;
