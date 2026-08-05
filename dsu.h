@@ -770,7 +770,6 @@ static DsuHandle *dsu_create(const char *path, uint64_t n_in, mode_t mode, char 
                         DSU_ERR("%s: fchmod: %s", path, strerror(errno));
                         munmap(base, map_size); flock(fd, LOCK_UN); close(fd); return NULL;
                     }
-                    memset(base, 0, map_size);   /* start from a provably empty structure */
                     dsu_init_header(base, n, total);
                     flock(fd, LOCK_UN); close(fd);
                     return dsu_setup(base, map_size, path, -1);
